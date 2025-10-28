@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/gregw/.barely/**)",
+      "Bash(python test_phase2.py:*)",
+      "Bash(python test_phase3.py:*)",
+      "Bash(python -m barely.cli.main:*)",
+      "Bash(python test_phase4.py:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(del prototype_audio_viz.py prototype_audio_viz_v2.py prototype_waveform.py prototype_waveform_horizontal.py prototype_waveform_hires.py prototype_waveform_subpixel.py test_audio_devices.py test_audio_capture.py check_stereo_mix.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
