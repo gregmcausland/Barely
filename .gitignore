@@ -112,3 +112,5 @@ desktop.ini
 # Project local data/cache
 .barely/
 
+# Ignore nested/embedded repos
+BarelyThere/
