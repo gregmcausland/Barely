@@ -114,3 +114,6 @@ desktop.ini
 
 # Ignore nested/embedded repos
 BarelyThere/
+
+# Windows reserved device names (can't be deleted normally)
+nul
