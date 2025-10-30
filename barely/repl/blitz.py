@@ -562,26 +562,37 @@ def run_blitz_mode(project_id=None, scope=None):
 
                             if is_active:
                                 try:
-                                    # Try to read audio data (non-blocking with exception_on_overflow=False)
-                                    # This will return immediately if no data available
-                                    data = stream_ref.read(CHUNK, exception_on_overflow=False)
-                                    
-                                    if len(data) > 0:
-                                        audio_array = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                                    # Check if any data is available before reading (non-blocking)
+                                    # get_read_available() returns number of frames available
+                                    frames_available = stream_ref.get_read_available()
+                                    if frames_available > 0:
+                                        # Read available data (up to CHUNK size) - non-blocking
+                                        read_size = min(CHUNK, frames_available)
+                                        data = stream_ref.read(read_size, exception_on_overflow=False)
+                                        
+                                        if len(data) > 0:
+                                            audio_array = np.frombuffer(data, dtype=np.int16).astype(np.float32)
 
-                                        if device_ref and device_ref.get("maxInputChannels", 1) > 1:
-                                            audio_array = audio_array.reshape(-1, device_ref["maxInputChannels"])
-                                            audio_array = np.mean(audio_array, axis=1)
+                                            if device_ref and device_ref.get("maxInputChannels", 1) > 1:
+                                                audio_array = audio_array.reshape(-1, device_ref["maxInputChannels"])
+                                                audio_array = np.mean(audio_array, axis=1)
 
-                                        audio_array = audio_array / 32768.0
-                                        wave_text = render_waveform(audio_array)
-                                        audio_error_count = 0  # Reset error count on success
+                                            audio_array = audio_array / 32768.0
+                                            wave_text = render_waveform(audio_array)
+                                            audio_error_count = 0  # Reset error count on success
+                                        else:
+                                            # No data available - skip this frame
+                                            wave_text = Text("Waiting for audio...", style="dim")
                                     else:
-                                        # No data available - skip this frame
+                                        # No data available yet - skip this frame
                                         wave_text = Text("Waiting for audio...", style="dim")
-                                except (OSError, IOError, ValueError) as e:
+                                except (OSError, IOError, ValueError, AttributeError) as e:
                                     # Stream read error - increment counter
-                                    raise
+                                    # AttributeError can occur if get_read_available() doesn't exist
+                                    audio_error_count += 1
+                                    if audio_error_count >= max_audio_errors:
+                                        raise
+                                    wave_text = Text(f"Audio error ({audio_error_count}/{max_audio_errors})", style="dim yellow")
                             else:
                                 # Stream not active
                                 wave_text = Text("Audio inactive", style="dim")
