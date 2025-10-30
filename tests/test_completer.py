@@ -1,5 +1,6 @@
 """Quick test of completer functionality."""
 
+# Path setup handled by conftest.py
 from barely.repl.completer import create_completer
 from prompt_toolkit.document import Document
 

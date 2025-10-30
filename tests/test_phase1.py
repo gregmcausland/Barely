@@ -4,8 +4,10 @@
 import sys
 from pathlib import Path
 
-# Add project root to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path for imports (when run directly)
+# conftest.py handles this for pytest runs
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from barely.core import repository
 from barely.core.exceptions import TaskNotFoundError

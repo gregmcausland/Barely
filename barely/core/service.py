@@ -43,6 +43,16 @@ from typing import List, Optional
 
 from . import repository
 from .models import Task, Project, Column
+from .constants import (
+    VALID_SCOPES,
+    ACTIVE_SCOPES,
+    DEFAULT_SCOPE,
+    DEFAULT_COLUMN_ID,
+    SCOPE_BACKLOG,
+    SCOPE_WEEK,
+    SCOPE_TODAY,
+    SCOPE_ARCHIVED,
+)
 from .exceptions import (
     TaskNotFoundError,
     ProjectNotFoundError,
@@ -53,9 +63,10 @@ from .exceptions import (
 
 def create_task(
     title: str,
-    column_id: int = 1,  # Default to "Todo" column
+    column_id: int = DEFAULT_COLUMN_ID,  # Default to "Todo" column
     project_id: Optional[int] = None,
-    scope: str = "backlog",  # Default to backlog
+    scope: str = DEFAULT_SCOPE,  # Default to backlog
+    description: Optional[str] = None,
 ) -> Task:
     """
     Create a new task with validation.
@@ -65,6 +76,7 @@ def create_task(
         column_id: Column to place task in (defaults to 1 = "Todo")
         project_id: Optional project to associate with
         scope: Task scope (backlog, week, today) - defaults to backlog
+        description: Optional task description
 
     Returns:
         Newly created Task object
@@ -85,11 +97,15 @@ def create_task(
         raise InvalidInputError("Task title cannot be empty")
 
     # Validate scope (archived not allowed for new tasks)
-    valid_scopes = ("backlog", "week", "today")
-    if scope not in valid_scopes:
+    if scope not in ACTIVE_SCOPES:
         raise InvalidInputError(
-            f"Invalid scope '{scope}'. Must be one of: {', '.join(valid_scopes)}"
+            f"Invalid scope '{scope}'. Must be one of: {', '.join(ACTIVE_SCOPES)}"
         )
+
+    # Sanitize description if provided
+    description_value = description.strip() if description else None
+    if description_value and not description_value:
+        description_value = None
 
     # Create task via repository layer
     task = repository.create_task(
@@ -97,6 +113,7 @@ def create_task(
         column_id=column_id,
         project_id=project_id,
         scope=scope,
+        description=description_value,
     )
 
     return task
@@ -128,7 +145,7 @@ def complete_task(task_id: int) -> Task:
         raise TaskNotFoundError(task_id)
 
     # Update task fields for completion
-    task.scope = "archived"
+    task.scope = SCOPE_ARCHIVED
     task.completed_at = datetime.now().isoformat()
 
     # Persist changes
@@ -137,7 +154,7 @@ def complete_task(task_id: int) -> Task:
     return task
 
 
-def uncomplete_task(task_id: int, target_scope: str = "backlog") -> Task:
+def uncomplete_task(task_id: int, target_scope: str = DEFAULT_SCOPE) -> Task:
     """
     Mark task as incomplete by pulling it back from archived scope.
 
@@ -192,7 +209,7 @@ def list_tasks(
 
     # Exclude archived tasks by default
     if not include_archived:
-        tasks = [t for t in tasks if t.scope != "archived"]
+        tasks = [t for t in tasks if t.scope != SCOPE_ARCHIVED]
 
     # Apply filters in Python
     # Filter by project if specified
@@ -355,6 +372,51 @@ def get_project(project_id: int) -> Optional[Project]:
     return repository.get_project(project_id)
 
 
+def find_project_by_name(name: str) -> Optional[Project]:
+    """
+    Find project by name (case-insensitive).
+
+    Args:
+        name: Project name to search for
+
+    Returns:
+        Project object if found, None otherwise
+
+    Notes:
+        - Case-insensitive matching
+        - Returns None if not found (use when existence is optional)
+        - For errors, use find_project_by_name_or_raise() instead
+    """
+    projects = list_projects()
+    return next((p for p in projects if p.name.lower() == name.lower()), None)
+
+
+def find_project_by_name_or_raise(name: str) -> Project:
+    """
+    Find project by name (case-insensitive), raising error if not found.
+
+    Args:
+        name: Project name to search for
+
+    Returns:
+        Project object if found
+
+    Raises:
+        InvalidInputError: If project not found (with helpful message)
+
+    Notes:
+        - Case-insensitive matching
+        - Use this when project must exist (e.g., assignment operations)
+    """
+    project = find_project_by_name(name)
+    if not project:
+        available = ", ".join([p.name for p in list_projects()])
+        raise InvalidInputError(
+            f"Project '{name}' not found. Available projects: {available}"
+        )
+    return project
+
+
 def delete_project(project_id: int) -> None:
     """
     Delete project permanently.
@@ -384,6 +446,50 @@ def list_columns() -> List[Column]:
         List of all columns, ordered by position
     """
     return repository.list_columns()
+
+
+def find_column_by_name(name: str) -> Optional[Column]:
+    """
+    Find column by name (case-insensitive).
+
+    Args:
+        name: Column name to search for
+
+    Returns:
+        Column object if found, None otherwise
+
+    Notes:
+        - Case-insensitive matching
+        - Returns None if not found
+        - For errors, use find_column_by_name_or_raise() instead
+    """
+    return repository.get_column_by_name(name)
+
+
+def find_column_by_name_or_raise(name: str) -> Column:
+    """
+    Find column by name (case-insensitive), raising error if not found.
+
+    Args:
+        name: Column name to search for
+
+    Returns:
+        Column object if found
+
+    Raises:
+        InvalidInputError: If column not found (with helpful message)
+
+    Notes:
+        - Case-insensitive matching
+        - Use this when column must exist (e.g., move operations)
+    """
+    column = repository.get_column_by_name(name)
+    if not column:
+        available = ", ".join([c.name for c in list_columns()])
+        raise InvalidInputError(
+            f"Column '{name}' not found. Available columns: {available}"
+        )
+    return column
 
 
 def move_task(task_id: int, column_id: int) -> Task:
@@ -500,7 +606,7 @@ def list_backlog() -> List[Task]:
         - This is where tasks live until pulled into week or today
         - Already filtered by scope, so no need to exclude archived
     """
-    return repository.list_tasks_by_scope("backlog")
+    return repository.list_tasks_by_scope(SCOPE_BACKLOG)
 
 
 def list_week() -> List[Task]:
@@ -515,7 +621,7 @@ def list_week() -> List[Task]:
         - Tasks are manually pulled here from backlog (typically Monday planning)
         - Already filtered by scope, so no need to exclude archived
     """
-    return repository.list_tasks_by_scope("week")
+    return repository.list_tasks_by_scope(SCOPE_WEEK)
 
 
 def list_today() -> List[Task]:
@@ -531,7 +637,7 @@ def list_today() -> List[Task]:
         - This is the primary view for "blitz mode"
         - Already filtered by scope, so no need to exclude archived
     """
-    return repository.list_tasks_by_scope("today")
+    return repository.list_tasks_by_scope(SCOPE_TODAY)
 
 
 def list_completed() -> List[Task]:
@@ -546,7 +652,7 @@ def list_completed() -> List[Task]:
         - Useful for reviewing completed work
         - Can be reactivated by pulling back to backlog/week/today
     """
-    tasks = repository.list_tasks_by_scope("archived")
+    tasks = repository.list_tasks_by_scope(SCOPE_ARCHIVED)
     # Sort by completed_at if available, otherwise by updated_at
     tasks.sort(key=lambda t: t.completed_at or t.updated_at or "", reverse=True)
     return tasks
@@ -574,10 +680,9 @@ def pull_task(task_id: int, target_scope: str) -> Task:
         - Automatically updates updated_at timestamp
     """
     # Validate target scope (now includes archived)
-    valid_scopes = ("backlog", "week", "today", "archived")
-    if target_scope not in valid_scopes:
+    if target_scope not in VALID_SCOPES:
         raise InvalidInputError(
-            f"Invalid scope '{target_scope}'. Must be one of: {', '.join(valid_scopes)}"
+            f"Invalid scope '{target_scope}'. Must be one of: {', '.join(VALID_SCOPES)}"
         )
 
     # Repository handles existence check and update
@@ -605,10 +710,9 @@ def pull_tasks(task_ids: List[int], target_scope: str) -> List[Task]:
         - Use this for bulk pulls like "pull 1,2,3 into week"
     """
     # Validate target scope once (now includes archived)
-    valid_scopes = ("backlog", "week", "today", "archived")
-    if target_scope not in valid_scopes:
+    if target_scope not in VALID_SCOPES:
         raise InvalidInputError(
-            f"Invalid scope '{target_scope}'. Must be one of: {', '.join(valid_scopes)}"
+            f"Invalid scope '{target_scope}'. Must be one of: {', '.join(VALID_SCOPES)}"
         )
 
     # Pull each task (let errors bubble up for CLI/REPL to handle)

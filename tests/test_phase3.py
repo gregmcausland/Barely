@@ -18,10 +18,13 @@ import subprocess
 import json
 from pathlib import Path
 
-# Fix Windows console encoding
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Path setup handled by conftest.py for pytest runs
+# For direct execution, add project root and fix Windows encoding
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    if sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 
 def run_command(cmd, expect_error=False):

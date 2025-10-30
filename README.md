@@ -1,23 +1,24 @@
 # Barely
 
-A minimalist, terminal-native task manager with a focus on **pull-based workflows** and **keyboard-first interaction**.
+A minimalist, terminal-native task manager built around **pull-based workflows** and **keyboard-first interaction**. Work the way you actually think, not the way some app thinks you should.
 
 ## Philosophy
 
 Barely is designed around how you actually work:
 
 - **Pull, don't schedule**: Move tasks through scope levels (backlog → week → today) when YOU'RE ready, not based on dates
-- **REPL-first**: Interactive shell as the primary interface
-- **Context-aware**: Set your working project/scope and all commands adapt
+- **REPL-first**: Interactive shell as the primary interface—where the magic happens
+- **Context-aware**: Set your working project/scope and all commands adapt automatically
 - **Fast feedback**: Instant responses, delightful animations, keyboard-native UX
 - **Local-first**: SQLite storage, no cloud dependencies, your data stays yours
 
 ## Installation
 
-### Option 1: Install with pip
+### Option 1: Install with pip (recommended)
 ```bash
 pip install -e .
 ```
+This installs the `barely` command globally.
 
 ### Option 2: Run as Python module (no installation)
 
@@ -25,7 +26,6 @@ pip install -e .
 ```bash
 # Use the wrapper script
 barely.bat add "Write documentation"
-barely.bat ls
 
 # Or run directly as module
 python -m barely.cli.main add "Write documentation"
@@ -38,7 +38,6 @@ chmod +x barely
 
 # Use the wrapper script
 ./barely add "Write documentation"
-./barely ls
 
 # Or run directly as module
 python -m barely.cli.main add "Write documentation"
@@ -58,7 +57,7 @@ barely done 1
 
 ## The Pull-Based Workflow
 
-Barely uses a **three-scope system** for managing cognitive load:
+Barely uses a **three-scope system** that matches how you actually think about work:
 
 ### 1. Backlog (The Inbox)
 Everything starts here. Capture tasks without worrying about when you'll do them.
@@ -186,8 +185,8 @@ Pickers respect your context and only show relevant tasks!
 
 ### Features
 
-- **Command history**: Up/down arrows
-- **Autocomplete**: Tab key for commands, flags, values
+- **Command history**: Up/down arrows to navigate
+- **Autocomplete**: Tab key for commands, flags, and values
 - **Bottom toolbar**: Real-time task counts and rotating tips
 - **Right prompt**: Shows task count in current context
 - **ASCII animations**: Delightful feedback for operations
@@ -232,7 +231,7 @@ barely ls --raw                      # Plain text, no colors
 
 **Version 0.3.0** - Phases 1-8 complete, Phase 7 polish ongoing
 
-✅ Complete:
+✅ **Complete:**
 - Phase 1: Foundation (SQLite, models, repository)
 - Phase 2: Service layer (business logic, validation)
 - Phase 3: CLI (Typer commands, JSON output)
@@ -242,7 +241,7 @@ barely ls --raw                      # Plain text, no colors
 - Phase 7: REPL polish (context, pickers, animations, toolbar) - 90% complete
 - Phase 8: Blitz mode (audio viz, keyboard controls)
 
-🚧 In Progress:
+🚧 **In Progress:**
 - Dynamic autocomplete (project/column names from DB)
 - Task descriptions
 - Relative date display

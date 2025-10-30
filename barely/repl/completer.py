@@ -55,7 +55,7 @@ class BarelyCompleter(Completer):
     # Command-specific flags
     COMMAND_FLAGS = {
         "ls": ["--archived", "--project"],
-        "add": [],  # Note: --project could be added here if we want project support in add
+        "add": ["--ai"],  # AI title improvement flag
         "done": [],
         "rm": [],
         "edit": [],
@@ -437,6 +437,7 @@ class BarelyCompleter(Completer):
             "--raw": "Plain text output",
             "--status": "Filter by status",
             "--project": "Filter by project",
+            "--ai": "Improve task title using AI (Claude CLI)",
         }
         return descriptions.get(flag, "")
 

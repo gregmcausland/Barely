@@ -14,13 +14,10 @@ Tests all service functions:
 import sys
 from pathlib import Path
 
-# Fix Windows console encoding
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-
-# Add barely package to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Path setup handled by conftest.py for pytest runs
+# For direct execution, add project root to path
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from barely.core import service
 from barely.core.exceptions import TaskNotFoundError, InvalidInputError

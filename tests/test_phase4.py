@@ -15,14 +15,16 @@ import subprocess
 import json
 from pathlib import Path
 
-# Fix Windows console encoding - do this BEFORE any other imports
-# This prevents issues when barely.repl.main does the same thing
-if sys.platform == "win32":
-    import io
-    if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    if not isinstance(sys.stderr, io.TextIOWrapper) or sys.stderr.encoding != 'utf-8':
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# Path setup handled by conftest.py for pytest runs
+# For direct execution, add project root and fix Windows encoding
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    if sys.platform == "win32":
+        import io
+        if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if not isinstance(sys.stderr, io.TextIOWrapper) or sys.stderr.encoding != 'utf-8':
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 def test_parser():

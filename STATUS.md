@@ -186,7 +186,6 @@
 ### Database Migration
 - Created and ran migration to add scope column
 - All existing tasks migrated to backlog scope
-- Migration script available: `run_migration.py`
 
 ---
 

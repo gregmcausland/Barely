@@ -2,13 +2,7 @@
 Test fixes for flag handling and filtering.
 """
 
-import subprocess
-import sys
-from pathlib import Path
-
-# Setup path
-sys.path.insert(0, str(Path(__file__).parent))
-
+# Path setup handled by conftest.py
 from barely.core import repository, service
 import pytest
 

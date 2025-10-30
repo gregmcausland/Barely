@@ -102,7 +102,8 @@ def create_task(
     title: str,
     column_id: int,
     project_id: Optional[int] = None,
-    scope: str = "backlog"
+    scope: str = "backlog",
+    description: Optional[str] = None
 ) -> Task:
     """
     Create a new task.
@@ -112,6 +113,7 @@ def create_task(
         column_id: Column to place task in (required)
         project_id: Optional project to associate with
         scope: Task scope (backlog, week, today) - defaults to backlog
+        description: Optional task description
 
     Returns:
         Newly created Task object
@@ -125,10 +127,10 @@ def create_task(
 
     cursor = conn.execute(
         """
-        INSERT INTO tasks (title, column_id, project_id, status, scope, created_at, updated_at)
-        VALUES (?, ?, ?, 'todo', ?, ?, ?)
+        INSERT INTO tasks (title, column_id, project_id, status, scope, description, created_at, updated_at)
+        VALUES (?, ?, ?, 'todo', ?, ?, ?, ?)
         """,
-        (title, column_id, project_id, scope, now, now),
+        (title, column_id, project_id, scope, description, now, now),
     )
     conn.commit()
 

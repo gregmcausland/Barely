@@ -17,8 +17,10 @@ import subprocess
 import sys
 import json as json_module
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Path setup handled by conftest.py for pytest runs
+# For direct execution, add project root to path
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from barely.core import repository, service, models, exceptions
 
