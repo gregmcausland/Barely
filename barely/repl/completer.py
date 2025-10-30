@@ -16,6 +16,7 @@ NOTES:
   - Suggests pull scopes after "pull" command
   - Suggests project names after "assign" command
   - Suggests project names and clear options ("none", "clear") after "use" command
+  - Suggests scope values (today, week, backlog, all) after "scope" command
   - Suggests task IDs for commands expecting IDs; suggests column names for mv
   - Case-insensitive matching
 """
@@ -39,7 +40,7 @@ class BarelyCompleter(Completer):
     COMMANDS = [
         "add", "assign", "ls", "done", "rm", "edit", "desc", "show", "view",
         "mv", "today", "week", "backlog", "history", "pull", "use", "scope",
-        "project", "blitz", "help", "clear", "exit", "quit"
+        "project", "blitz", "help", "clear", "undo", "exit", "quit"
     ]
 
     # Project subcommands
@@ -166,6 +167,17 @@ class BarelyCompleter(Completer):
                 yield from self._complete_project_names(words[1], include_clear_options=True)
                 return
 
+        # Case 2e: "scope" command -> suggest scope values
+        if command == "scope":
+            # After "scope " suggest scope values
+            if len(words) == 1 and text_before_cursor.endswith(" "):
+                yield from self._complete_scope_values("")
+                return
+            # Typing a scope value
+            elif len(words) == 2 and not text_before_cursor.endswith(" "):
+                yield from self._complete_scope_values(words[1])
+                return
+
         # Case 3: After a command -> check for flag values or suggest flags
         last_word = words[-1] if words else ""
 
@@ -288,6 +300,47 @@ class BarelyCompleter(Completer):
                     display_meta=self._get_pull_scope_description(scope),
                 )
 
+    def _complete_scope_values(self, word: str) -> Iterable[Completion]:
+        """
+        Complete scope command values.
+
+        Args:
+            word: Partial scope value being typed
+
+        Yields:
+            Completion objects for matching scope values
+
+        Notes:
+            - Includes scope values: today, week, backlog
+            - Also includes clear options: all, none, clear
+        """
+        word_lower = word.lower()
+        
+        # Scope values (same as pull scopes)
+        for scope in self.PULL_SCOPES:
+            if scope.startswith(word_lower):
+                yield Completion(
+                    scope,
+                    start_position=-len(word),
+                    display=scope,
+                    display_meta=self._get_pull_scope_description(scope),
+                )
+        
+        # Clear options
+        clear_options = [
+            ("all", "Clear scope filter (show all scopes)"),
+            ("none", "Clear scope filter (show all scopes)"),
+            ("clear", "Clear scope filter (show all scopes)"),
+        ]
+        for option, description in clear_options:
+            if option.startswith(word_lower):
+                yield Completion(
+                    option,
+                    start_position=-len(word),
+                    display=option,
+                    display_meta=description,
+                )
+
     def _complete_project_names(self, word: str, include_clear_options: bool = False) -> Iterable[Completion]:
         """
         Complete project names for assign/use commands.
@@ -369,6 +422,7 @@ class BarelyCompleter(Completer):
             "project": "Manage projects",
             "help": "Show available commands",
             "clear": "Clear the screen",
+            "undo": "Undo last operation",
             "exit": "Exit REPL",
             "quit": "Exit REPL",
         }

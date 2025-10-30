@@ -735,11 +735,15 @@ def show(
                 details.append(f"{project_name}\n", style="cyan")
 
             details.append(f"Created: ", style="dim")
-            details.append(f"{task.created_at}\n", style="white")
+            # Use relative date formatting
+            from ..repl import style
+            created_rel = style.format_relative(task.created_at) if task.created_at else "-"
+            details.append(f"{created_rel}\n", style="white")
 
             if task.completed_at:
                 details.append(f"Completed: ", style="dim")
-                details.append(f"{task.completed_at}\n", style="green")
+                completed_rel = style.format_relative(task.completed_at)
+                details.append(f"{completed_rel}\n", style="green")
 
             panel = Panel(details, border_style="blue", padding=(1, 2))
             console.print(panel)

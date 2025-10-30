@@ -63,6 +63,7 @@ from .completer import create_completer
 from . import style
 from . import blitz
 from . import pickers
+from . import undo
 
 
 # Rich console for formatted output
@@ -420,6 +421,9 @@ def handle_add_command(result: ParseResult) -> None:
 
         task = service.create_task(title, project_id=project_id)
 
+        # Record for undo
+        undo.record_create(task.id)
+
         # Celebrate!
         style.celebrate_add()
 
@@ -507,7 +511,22 @@ def handle_done_command(result: ParseResult) -> None:
         completed_count = 0
         for task_id in task_ids:
             try:
+                # Get original task data before completion
+                original_task = repository.get_task(task_id)
+                if original_task:
+                    original_status = original_task.status
+                    original_completed_at = original_task.completed_at
+                    original_column_id = original_task.column_id
+                else:
+                    original_status = "todo"
+                    original_completed_at = None
+                    original_column_id = 1
+                
                 task = service.complete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                undo.record_complete(task_id, original_status, original_completed_at, original_column_id)
+                
                 style.celebrate_done()
                 display_task(task, "✓ Completed:")
                 completed_count += 1
@@ -529,7 +548,23 @@ def handle_done_command(result: ParseResult) -> None:
         for id_str in ids:
             try:
                 task_id = int(id_str)
+                
+                # Get original task data before completion
+                original_task = repository.get_task(task_id)
+                if original_task:
+                    original_status = original_task.status
+                    original_completed_at = original_task.completed_at
+                    original_column_id = original_task.column_id
+                else:
+                    original_status = "todo"
+                    original_completed_at = None
+                    original_column_id = 1
+                
                 task = service.complete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                undo.record_complete(task_id, original_status, original_completed_at, original_column_id)
+                
                 style.celebrate_done()
                 display_task(task, "✓ Completed:")
                 completed_count += 1
@@ -599,7 +634,26 @@ def handle_rm_command(result: ParseResult) -> None:
         deleted_count = 0
         for task_id in task_ids:
             try:
+                # Get task data before deletion (for undo)
+                task_data = None
+                task = repository.get_task(task_id)
+                if task:
+                    task_data = {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status,
+                        "scope": task.scope,
+                        "project_id": task.project_id,
+                        "column_id": task.column_id,
+                    }
+                
                 service.delete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                if task_data:
+                    undo.record_delete(task_id, task_data)
+                
                 style.celebrate_delete()
                 console.print(f"[green]✓ Deleted task {task_id}[/green]")
                 deleted_count += 1
@@ -702,7 +756,26 @@ def handle_rm_command(result: ParseResult) -> None:
         deleted_count = 0
         for task_id in tasks_to_delete:
             try:
+                # Get task data before deletion (for undo)
+                task_data = None
+                task = repository.get_task(task_id)
+                if task:
+                    task_data = {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status,
+                        "scope": task.scope,
+                        "project_id": task.project_id,
+                        "column_id": task.column_id,
+                    }
+                
                 service.delete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                if task_data:
+                    undo.record_delete(task_id, task_data)
+                
                 style.celebrate_delete()
                 console.print(f"[green]✓ Deleted task {task_id}[/green]")
                 deleted_count += 1
@@ -745,7 +818,16 @@ def handle_edit_command(result: ParseResult) -> None:
 
         # Join remaining args as new title
         new_title = " ".join(result.args[1:])
+        
+        # Get original title before update (for undo)
+        original_task = repository.get_task(task_id)
+        original_title = original_task.title if original_task else ""
+        
         task = service.update_task_title(task_id, new_title)
+        
+        # Record for undo
+        undo.record_update_title(task_id, original_title, new_title)
+        
         display_task(task, "✎ Updated:")
 
     except ValueError:
@@ -763,7 +845,15 @@ def handle_edit_command(result: ParseResult) -> None:
         task_id = task_ids[0]
 
         try:
+            # Get original title before update (for undo)
+            original_task = repository.get_task(task_id)
+            original_title = original_task.title if original_task else ""
+            
             task = service.update_task_title(task_id, new_title)
+            
+            # Record for undo
+            undo.record_update_title(task_id, original_title, new_title)
+            
             display_task(task, "✎ Updated:")
         except TaskNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -986,7 +1076,15 @@ def handle_mv_command(result: ParseResult) -> None:
             return
 
         # Move task
+        # Get original column before move (for undo)
+        original_task = repository.get_task(task_id)
+        original_column_id = original_task.column_id if original_task else 1
+        
         task = service.move_task(task_id, column.id)
+        
+        # Record for undo
+        undo.record_mv(task_id, original_column_id, column.id)
+        
         display_task(task, f"→ Moved to {column.name}:")
 
     except ValueError:
@@ -1012,7 +1110,15 @@ def handle_mv_command(result: ParseResult) -> None:
         moved_count = 0
         for task_id in task_ids:
             try:
+                # Get original column before move (for undo)
+                original_task = repository.get_task(task_id)
+                original_column_id = original_task.column_id if original_task else 1
+                
                 task = service.move_task(task_id, column.id)
+                
+                # Record for undo (only track last operation)
+                undo.record_mv(task_id, original_column_id, column.id)
+                
                 display_task(task, f"→ Moved to {column.name}:")
                 moved_count += 1
             except TaskNotFoundError as e:
@@ -1376,7 +1482,15 @@ def handle_pull_command(result: ParseResult) -> None:
 
     for task_id in task_ids:
         try:
+            # Get original scope before pull (for undo)
+            original_task = repository.get_task(task_id)
+            original_scope = original_task.scope if original_task else "backlog"
+            
             task = service.pull_task(task_id, scope)
+            
+            # Record for undo (only track last operation)
+            undo.record_pull(task_id, original_scope, scope)
+            
             style.celebrate_pull()
             console.print(
                 f"[blue]{scope_emoji.get(scope, '→')}[/blue] "
@@ -1699,6 +1813,24 @@ def handle_scope_command(result: ParseResult) -> None:
     console.print(f"✓ Filtering to [cyan]{scope_name}[/cyan] tasks")
 
 
+def handle_undo_command(result: ParseResult) -> None:
+    """
+    Handle 'undo' command - undo last operation.
+    
+    Args:
+        result: Parsed command (unused)
+    
+    Usage:
+        undo
+    """
+    success, message = undo.undo_last_operation()
+    
+    if success:
+        console.print(f"[green]✓ {message}[/green]")
+    else:
+        console.print(f"[yellow]{message}[/yellow]")
+
+
 def handle_help_command(result: ParseResult) -> None:
     """
     Handle 'help' command - show available commands.
@@ -1861,6 +1993,7 @@ def execute_command(result: ParseResult) -> bool:
         "blitz": handle_blitz_command,
         "help": handle_help_command,
         "clear": handle_clear_command,
+        "undo": handle_undo_command,
     }
 
     handler = handlers.get(command)
