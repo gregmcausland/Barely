@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     column_id INTEGER NOT NULL REFERENCES columns(id),
     status TEXT CHECK(status IN ('todo', 'done', 'archived')) DEFAULT 'todo',
-    scope TEXT CHECK(scope IN ('backlog', 'week', 'today')) DEFAULT 'backlog',
+    scope TEXT CHECK(scope IN ('backlog', 'week', 'today', 'archived')) DEFAULT 'backlog',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

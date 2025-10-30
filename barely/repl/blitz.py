@@ -4,7 +4,7 @@ PURPOSE: Focused task-completion mode with live audio waveform visualizer
 EXPORTS:
   - run_blitz_mode() -> None
 DEPENDENCIES:
-  - core.service (list_today, complete_task)
+  - core.service (list_today, complete_task, uncomplete_task)
   - rich (Console, Layout, Panel, Text, Live)
   - numpy (audio processing)
   - pyaudiowpatch (audio capture)
@@ -13,8 +13,9 @@ NOTES:
   - Displays tasks from 'today' scope one at a time
   - Live audio waveform visualization
   - Shows upcoming tasks in list below current task
-  - Keyboard controls: d=done, s=skip, q=quit, ?=details
-  - Returns to REPL when complete or user quits
+  - Keyboard controls: d=done, u=un-complete, ↑/↓=navigate, q=quit, ?=details
+  - Completed tasks show with different styling when navigated to
+  - Returns to REPL when user quits
 """
 
 import numpy as np
@@ -32,6 +33,7 @@ import threading
 from ..core import service
 from ..core.models import Task
 from .style import celebrate_bulk
+from .parser import ParseResult
 
 
 # Audio configuration
@@ -48,7 +50,10 @@ SUBPIXEL_CHARS = ['‾', '¯', '˗', '-', '─', '-', 'ˍ', '_', '‗']
 # Audio state
 audio_stream = None
 audio_device = None
+audio_pyaudio = None  # Store PyAudio instance for cleanup
 audio_ready = False
+audio_lock = threading.Lock()  # Protect audio state access
+audio_init_timeout = 5.0  # Maximum time to wait for audio initialization
 
 
 def render_waveform(audio_data, width=WAVEFORM_WIDTH, height=NUM_ROWS):
@@ -194,6 +199,8 @@ def create_upcoming_list(tasks, current_index, completed_ids):
 def create_blitz_layout(task, tasks, task_index, progress_text, completed_ids, wave_text=None, show_completion=False):
     """Create the blitz mode layout with task, upcoming tasks, and waveform."""
 
+    is_completed = task.id in completed_ids or task.scope == "archived"
+
     if show_completion:
         # Show completion state
         completion_text = Text()
@@ -205,6 +212,31 @@ def create_blitz_layout(task, tasks, task_index, progress_text, completed_ids, w
         task_panel = Panel(
             completion_text,
             title="[bold bright_green]Complete![/bold bright_green]",
+            border_style="bright_green",
+            padding=(1, 2),
+            width=80
+        )
+    elif is_completed:
+        # Completed task display - different styling
+        task_display = Text()
+        task_display.append(f"#{task.id} ", style="dim")
+        task_display.append("✓ ", style="bold bright_green")
+        task_display.append(task.title, style="bold strike bright_green")
+        
+        if task.description:
+            task_display.append("\n\n", style="dim")
+            task_display.append(task.description[:300], style="strike dim white")
+            if len(task.description) > 300:
+                task_display.append("...", style="strike dim")
+
+        task_display.append("\n\n", style="dim")
+        task_display.append(progress_text, style="dim cyan")
+        task_display.append("\n\n", style="dim")
+        task_display.append("[Press 'u' to un-complete]", style="dim italic yellow")
+
+        task_panel = Panel(
+            task_display,
+            title="[bold bright_green]Completed Task[/bold bright_green]",
             border_style="bright_green",
             padding=(1, 2),
             width=80
@@ -258,8 +290,10 @@ def create_blitz_layout(task, tasks, task_index, progress_text, completed_ids, w
     controls = Text()
     controls.append("d", style="bold green")
     controls.append("=done  ", style="dim")
-    controls.append("s", style="bold yellow")
-    controls.append("=skip  ", style="dim")
+    controls.append("u", style="bold yellow")
+    controls.append("=un-complete  ", style="dim")
+    controls.append("↑/↓", style="bold yellow")
+    controls.append("=navigate  ", style="dim")
     controls.append("?", style="bold blue")
     controls.append("=details  ", style="dim")
     controls.append("q", style="bold red")
@@ -285,42 +319,114 @@ def create_blitz_layout(task, tasks, task_index, progress_text, completed_ids, w
 
 
 def init_audio_background():
-    """Initialize audio in background thread."""
-    global audio_stream, audio_device, audio_ready
+    """Initialize audio in background thread with timeout protection."""
+    global audio_stream, audio_device, audio_ready, audio_pyaudio
 
     try:
+        # Create PyAudio instance
         p = pyaudio.PyAudio()
-        wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-        default_output = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+        with audio_lock:
+            audio_pyaudio = p  # Store for cleanup
 
-        # Find loopback device
+        # Get WASAPI info with timeout protection
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        except OSError:
+            # WASAPI not available - audio won't work
+            with audio_lock:
+                audio_ready = True  # Mark as "ready" (failed) so we don't wait forever
+                audio_pyaudio = None
+            if p:
+                try:
+                    p.terminate()
+                except:
+                    pass
+            return
+
+        try:
+            default_output = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+        except (KeyError, OSError):
+            # No default device
+            with audio_lock:
+                audio_ready = True
+                audio_pyaudio = None
+            if p:
+                try:
+                    p.terminate()
+                except:
+                    pass
+            return
+
+        # Find loopback device with timeout protection
         loopback_device = None
-        for loopback in p.get_loopback_device_info_generator():
-            if default_output["name"] in loopback["name"]:
-                loopback_device = loopback
-                break
-
-        if loopback_device is None:
+        try:
             for loopback in p.get_loopback_device_info_generator():
-                loopback_device = loopback
-                break
+                if default_output["name"] in loopback["name"]:
+                    loopback_device = loopback
+                    break
 
-        # Open audio stream
+            if loopback_device is None:
+                for loopback in p.get_loopback_device_info_generator():
+                    loopback_device = loopback
+                    break
+        except (StopIteration, OSError):
+            # No loopback devices available
+            with audio_lock:
+                audio_ready = True
+                audio_pyaudio = None
+            if p:
+                try:
+                    p.terminate()
+                except:
+                    pass
+            return
+
+        # Open audio stream with error handling
         if loopback_device:
-            audio_stream = p.open(
-                format=pyaudio.paInt16,
-                channels=loopback_device["maxInputChannels"],
-                rate=int(loopback_device["defaultSampleRate"]),
-                frames_per_buffer=CHUNK,
-                input=True,
-                input_device_index=loopback_device["index"]
-            )
-            audio_device = loopback_device
-            audio_ready = True
+            try:
+                stream = p.open(
+                    format=pyaudio.paInt16,
+                    channels=loopback_device["maxInputChannels"],
+                    rate=int(loopback_device["defaultSampleRate"]),
+                    frames_per_buffer=CHUNK,
+                    input=True,
+                    input_device_index=loopback_device["index"],
+                    stream_callback=None  # Use blocking reads
+                )
+                with audio_lock:
+                    audio_stream = stream
+                    audio_device = loopback_device
+                    audio_ready = True
+            except (OSError, ValueError) as e:
+                # Stream creation failed
+                with audio_lock:
+                    audio_ready = True
+                    audio_pyaudio = None
+                if p:
+                    try:
+                        p.terminate()
+                    except:
+                        pass
+        else:
+            with audio_lock:
+                audio_ready = True
+                audio_pyaudio = None
+            if p:
+                try:
+                    p.terminate()
+                except:
+                    pass
 
     except Exception as e:
-        # Silently fail - audio is optional
-        pass
+        # Any other error - mark as ready (failed) so we don't wait forever
+        with audio_lock:
+            audio_ready = True
+            audio_pyaudio = None
+        try:
+            if 'p' in locals() and p:
+                p.terminate()
+        except:
+            pass
 
 
 def check_keypress():
@@ -331,9 +437,15 @@ def check_keypress():
         # Check for special keys (arrow keys, function keys, etc.)
         # These return two bytes: first is 0x00 or 0xE0, second is the key code
         if ch in (b'\x00', b'\xe0'):
-            # Consume the second byte and ignore the special key
+            # Consume the second byte to get the actual key code
             if msvcrt.kbhit():
-                msvcrt.getch()
+                key_code = msvcrt.getch()
+                # Arrow key codes: H=Up, P=Down, K=Left, M=Right
+                if key_code == b'H':
+                    return 'up'
+                elif key_code == b'P':
+                    return 'down'
+                # Ignore other special keys
             return None
 
         # Regular key - decode and return
@@ -394,36 +506,117 @@ def run_blitz_mode(project_id=None, scope=None):
     scope_display = f"[cyan]{target_scope}[/cyan]"
     console.print(f"[dim]{len(tasks)} tasks in {scope_display} scope[/dim]\n")
 
+    # Reset audio state
+    with audio_lock:
+        audio_stream = None
+        audio_device = None
+        audio_pyaudio = None
+        audio_ready = False
+
     # Start audio initialization in background
     audio_thread = threading.Thread(target=init_audio_background, daemon=True)
     audio_thread.start()
+
+    # Wait for audio initialization with timeout
+    start_time = time.time()
+    while not audio_ready and (time.time() - start_time) < audio_init_timeout:
+        time.sleep(0.1)
 
     # Blitz loop
     task_index = 0
     completed_count = 0
     completed_ids = set()  # Track completed task IDs for strikethrough
+    audio_error_count = 0  # Track consecutive audio errors
+    max_audio_errors = 5  # Disable audio after this many errors
 
     try:
         with Live(console=console, refresh_per_second=UPDATE_FPS) as live:
-            while task_index < len(tasks):
+            while True:
+                # Clamp task_index to valid range
+                task_index = max(0, min(task_index, len(tasks) - 1))
                 current_task = tasks[task_index]
                 progress_text = f"Task {task_index + 1} of {len(tasks)} • {completed_count} completed"
 
-                # Read audio if available
+                # Read audio if available (with guardrails)
                 wave_text = None
-                if audio_ready and audio_stream and audio_device:
+                with audio_lock:
+                    stream_ready = audio_ready and audio_stream and audio_device
+
+                if stream_ready and audio_error_count < max_audio_errors:
                     try:
-                        data = audio_stream.read(CHUNK, exception_on_overflow=False)
-                        audio_array = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                        # Get stream reference safely
+                        with audio_lock:
+                            stream_ref = audio_stream
+                            device_ref = audio_device
 
-                        if audio_device["maxInputChannels"] > 1:
-                            audio_array = audio_array.reshape(-1, audio_device["maxInputChannels"])
-                            audio_array = np.mean(audio_array, axis=1)
+                        if stream_ref is None:
+                            wave_text = Text("Audio disconnected", style="dim")
+                            audio_error_count += 1
+                        else:
+                            # Check if stream is active (protected)
+                            try:
+                                is_active = stream_ref.is_active()
+                            except (OSError, AttributeError):
+                                # Stream is in bad state
+                                is_active = False
 
-                        audio_array = audio_array / 32768.0
-                        wave_text = render_waveform(audio_array)
-                    except:
+                            if is_active:
+                                try:
+                                    # Try to read audio data (non-blocking with exception_on_overflow=False)
+                                    # This will return immediately if no data available
+                                    data = stream_ref.read(CHUNK, exception_on_overflow=False)
+                                    
+                                    if len(data) > 0:
+                                        audio_array = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+
+                                        if device_ref and device_ref.get("maxInputChannels", 1) > 1:
+                                            audio_array = audio_array.reshape(-1, device_ref["maxInputChannels"])
+                                            audio_array = np.mean(audio_array, axis=1)
+
+                                        audio_array = audio_array / 32768.0
+                                        wave_text = render_waveform(audio_array)
+                                        audio_error_count = 0  # Reset error count on success
+                                    else:
+                                        # No data available - skip this frame
+                                        wave_text = Text("Waiting for audio...", style="dim")
+                                except (OSError, IOError, ValueError) as e:
+                                    # Stream read error - increment counter
+                                    raise
+                            else:
+                                # Stream not active
+                                wave_text = Text("Audio inactive", style="dim")
+                                audio_error_count += 1
+                    except (OSError, IOError, ValueError) as e:
+                        # Audio read error - increment counter
+                        audio_error_count += 1
+                        if audio_error_count >= max_audio_errors:
+                            wave_text = Text("Audio disabled (errors)", style="dim red")
+                            # Disable audio stream
+                            with audio_lock:
+                                if audio_stream:
+                                    try:
+                                        if audio_stream.is_active():
+                                            audio_stream.stop_stream()
+                                        audio_stream.close()
+                                    except:
+                                        pass
+                                    audio_stream = None
+                        else:
+                            wave_text = Text(f"Audio error ({audio_error_count}/{max_audio_errors})", style="dim yellow")
+                    except Exception as e:
+                        # Unexpected error - disable audio
+                        audio_error_count = max_audio_errors
                         wave_text = Text("Audio error", style="dim red")
+                        # Try to clean up stream
+                        with audio_lock:
+                            if audio_stream:
+                                try:
+                                    if audio_stream.is_active():
+                                        audio_stream.stop_stream()
+                                    audio_stream.close()
+                                except:
+                                    pass
+                                audio_stream = None
                 elif not audio_ready:
                     wave_text = Text("Connecting to audio...", style="dim yellow")
                 else:
@@ -447,21 +640,67 @@ def run_blitz_mode(project_id=None, scope=None):
                     ))
                     time.sleep(0.4)
 
-                    # Move to next task
-                    task_index += 1
+                    # Move to next task (if available)
+                    if task_index < len(tasks) - 1:
+                        task_index += 1
 
-                elif key == 's':
-                    # Skip to next
-                    task_index += 1
+                elif key == 'u':
+                    # Un-complete task
+                    if current_task.id in completed_ids or current_task.status == "done":
+                        uncompleted_task_id = current_task.id
+                        service.uncomplete_task(uncompleted_task_id)
+                        completed_count -= 1
+                        completed_ids.discard(uncompleted_task_id)  # Remove from completed set
+                        # Refresh task list to get updated status
+                        if target_scope == 'today':
+                            tasks = service.list_today()
+                        elif target_scope == 'week':
+                            tasks = service.list_week()
+                        elif target_scope == 'backlog':
+                            tasks = service.list_backlog()
+                        # Re-filter by project if specified
+                        if project_id is not None:
+                            tasks = [t for t in tasks if t.project_id == project_id]
+                        # Find the uncompleted task in the refreshed list to maintain position
+                        new_index = None
+                        for i, t in enumerate(tasks):
+                            if t.id == uncompleted_task_id:
+                                new_index = i
+                                break
+                        if new_index is not None:
+                            task_index = new_index
+                            current_task = tasks[task_index]
+                        else:
+                            # Task not found in refreshed list (shouldn't happen), clamp index
+                            task_index = max(0, min(task_index, len(tasks) - 1))
+                            if task_index < len(tasks):
+                                current_task = tasks[task_index]
+                        progress_text = f"Task {task_index + 1} of {len(tasks)} • {completed_count} completed"
+
+                elif key == 'up':
+                    # Navigate to previous task
+                    if task_index > 0:
+                        task_index -= 1
+
+                elif key == 'down':
+                    # Navigate to next task
+                    if task_index < len(tasks) - 1:
+                        task_index += 1
 
                 elif key == '?':
-                    # Show full details (pause)
+                    # Show full details using view command for consistency
                     live.stop()
-                    console.print(f"\n[bold]Task #{current_task.id}[/bold]")
-                    console.print(f"Title: {current_task.title}")
-                    if current_task.description:
-                        console.print(f"Description: {current_task.description}")
-                    console.print(f"Created: {current_task.created_at}")
+                    console.print()  # Add spacing
+                    # Import here to avoid circular import with main.py
+                    from .main import handle_show_command
+                    # Create ParseResult with task ID to invoke view command
+                    parse_result = ParseResult(
+                        command="view",
+                        args=[str(current_task.id)],
+                        flags={},
+                        raw_input=f"view {current_task.id}"
+                    )
+                    handle_show_command(parse_result)
                     console.print("\n[dim]Press any key to continue...[/dim]")
                     msvcrt.getch()
                     live.start()
@@ -471,11 +710,6 @@ def run_blitz_mode(project_id=None, scope=None):
                     break
 
                 time.sleep(1.0 / UPDATE_FPS)
-
-        # Cleanup audio
-        if audio_stream:
-            audio_stream.stop_stream()
-            audio_stream.close()
 
         # Summary
         console.print(f"\n[bold green]Blitz Mode Complete![/bold green]")
@@ -488,8 +722,26 @@ def run_blitz_mode(project_id=None, scope=None):
         console.print("\n\n[yellow]Blitz mode interrupted[/yellow]\n")
     except Exception as e:
         console.print(f"\n[red]Error in blitz mode: {e}[/red]\n")
+        import traceback
+        console.print("[dim]" + traceback.format_exc() + "[/dim]")
     finally:
-        # Reset audio state
-        audio_stream = None
-        audio_device = None
-        audio_ready = False
+        # Cleanup audio resources (with protection)
+        with audio_lock:
+            if audio_stream:
+                try:
+                    if audio_stream.is_active():
+                        audio_stream.stop_stream()
+                    audio_stream.close()
+                except:
+                    pass
+                audio_stream = None
+
+            if audio_pyaudio:
+                try:
+                    audio_pyaudio.terminate()
+                except:
+                    pass
+                audio_pyaudio = None
+
+            audio_device = None
+            audio_ready = False

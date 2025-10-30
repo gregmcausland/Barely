@@ -4,6 +4,7 @@ PURPOSE: Business logic layer for task operations
 EXPORTS:
   - create_task(title, project_id, column_id, scope) -> Task
   - complete_task(task_id) -> Task
+  - uncomplete_task(task_id) -> Task
   - list_tasks(project_id, status) -> List[Task]
   - update_task_title(task_id, new_title) -> Task
   - update_task_description(task_id, new_description) -> Task
@@ -83,7 +84,7 @@ def create_task(
     if not title:
         raise InvalidInputError("Task title cannot be empty")
 
-    # Validate scope
+    # Validate scope (archived not allowed for new tasks)
     valid_scopes = ("backlog", "week", "today")
     if scope not in valid_scopes:
         raise InvalidInputError(
@@ -103,23 +104,23 @@ def create_task(
 
 def complete_task(task_id: int) -> Task:
     """
-    Mark task as complete.
+    Mark task as complete by moving it to archived scope.
 
     Args:
         task_id: ID of task to complete
 
     Returns:
-        Updated Task object with status='done' and completed_at set
+        Updated Task object with scope='archived' and completed_at set
 
     Raises:
         TaskNotFoundError: If task_id doesn't exist
 
     Notes:
         - Sets completed_at to current timestamp
-        - Changes status to 'done'
-        - Moves task to 'Done' column (column_id=3)
+        - Moves task to 'archived' scope (consistent with pull-based workflow)
         - Automatically updates updated_at timestamp
-        - Idempotent: completing an already-done task is safe
+        - Idempotent: completing an already-archived task is safe
+        - To reactivate, use pull_task() to move back to backlog/week/today
     """
     # Fetch task (raises TaskNotFoundError if not found)
     task = repository.get_task(task_id)
@@ -127,9 +128,8 @@ def complete_task(task_id: int) -> Task:
         raise TaskNotFoundError(task_id)
 
     # Update task fields for completion
-    task.status = "done"
+    task.scope = "archived"
     task.completed_at = datetime.now().isoformat()
-    task.column_id = 3  # Move to "Done" column
 
     # Persist changes
     repository.update_task(task)
@@ -137,52 +137,67 @@ def complete_task(task_id: int) -> Task:
     return task
 
 
+def uncomplete_task(task_id: int, target_scope: str = "backlog") -> Task:
+    """
+    Mark task as incomplete by pulling it back from archived scope.
+
+    Args:
+        task_id: ID of task to un-complete
+        target_scope: Scope to move task to (defaults to 'backlog')
+
+    Returns:
+        Updated Task object moved back to active scope
+
+    Raises:
+        TaskNotFoundError: If task_id doesn't exist
+        InvalidInputError: If target_scope is invalid
+
+    Notes:
+        - Moves task from 'archived' scope back to active scope using pull_task()
+        - Clears completed_at timestamp
+        - Automatically updates updated_at timestamp
+        - Idempotent: un-completing a non-archived task is safe (just moves it)
+    """
+    # Use pull_task to reactivate (it handles validation and updates)
+    task = pull_task(task_id, target_scope)
+    
+    # Clear completed_at timestamp
+    task.completed_at = None
+    repository.update_task(task)
+    
+    return task
+
+
 def list_tasks(
     project_id: Optional[int] = None,
-    status: Optional[str] = None,
-    include_done: bool = False,
+    include_archived: bool = False,
 ) -> List[Task]:
     """
     List tasks with optional filters.
 
     Args:
         project_id: Filter by project ID (None = all projects)
-        status: Filter by status ('todo', 'done', 'archived', None = all)
-        include_done: Include completed tasks (column_id=3, default False)
+        include_archived: Include archived/completed tasks (default False)
 
     Returns:
         List of tasks matching filters, ordered by creation date (newest first)
 
-    Raises:
-        InvalidInputError: If status is invalid
-
     Notes:
-        - By default, excludes completed tasks (Done column)
-        - Validates status against allowed values
+        - By default, excludes archived tasks (scope='archived')
         - Filtering happens in Python (repository returns all tasks)
         - Future: push filtering to repository layer for performance
     """
-    # Validate status if provided
-    if status and status not in ("todo", "done", "archived"):
-        raise InvalidInputError(
-            f"Invalid status '{status}'. Must be 'todo', 'done', or 'archived'"
-        )
-
     # Get all tasks from repository
     tasks = repository.list_tasks()
 
-    # Exclude completed tasks by default (those in Done column)
-    if not include_done:
-        tasks = [t for t in tasks if t.column_id != 3]
+    # Exclude archived tasks by default
+    if not include_archived:
+        tasks = [t for t in tasks if t.scope != "archived"]
 
     # Apply filters in Python
     # Filter by project if specified
     if project_id is not None:
         tasks = [t for t in tasks if t.project_id == project_id]
-
-    # Filter by status if specified
-    if status is not None:
-        tasks = [t for t in tasks if t.status == status]
 
     return tasks
 
@@ -483,10 +498,9 @@ def list_backlog() -> List[Task]:
     Notes:
         - Backlog is the default scope for new tasks
         - This is where tasks live until pulled into week or today
-        - Excludes completed tasks (Done column)
+        - Already filtered by scope, so no need to exclude archived
     """
-    tasks = repository.list_tasks_by_scope("backlog")
-    return [t for t in tasks if t.column_id != 3]
+    return repository.list_tasks_by_scope("backlog")
 
 
 def list_week() -> List[Task]:
@@ -499,10 +513,9 @@ def list_week() -> List[Task]:
     Notes:
         - Week scope represents your weekly commitment
         - Tasks are manually pulled here from backlog (typically Monday planning)
-        - Excludes completed tasks (Done column)
+        - Already filtered by scope, so no need to exclude archived
     """
-    tasks = repository.list_tasks_by_scope("week")
-    return [t for t in tasks if t.column_id != 3]
+    return repository.list_tasks_by_scope("week")
 
 
 def list_today() -> List[Task]:
@@ -516,29 +529,27 @@ def list_today() -> List[Task]:
         - Today scope represents your daily focus list
         - Tasks are manually pulled here from week or backlog
         - This is the primary view for "blitz mode"
-        - Excludes completed tasks (Done column)
+        - Already filtered by scope, so no need to exclude archived
     """
-    tasks = repository.list_tasks_by_scope("today")
-    return [t for t in tasks if t.column_id != 3]
+    return repository.list_tasks_by_scope("today")
 
 
 def list_completed() -> List[Task]:
     """
-    List all completed tasks (those in Done column).
+    List all completed tasks (those in archived scope).
 
     Returns:
         List of completed tasks, ordered by completion date (newest first)
 
     Notes:
-        - Returns tasks in the Done column (column_id=3)
+        - Returns tasks with scope='archived'
         - Useful for reviewing completed work
-        - Can be pulled back to reopen tasks
+        - Can be reactivated by pulling back to backlog/week/today
     """
-    tasks = repository.list_tasks()
-    completed = [t for t in tasks if t.column_id == 3]
+    tasks = repository.list_tasks_by_scope("archived")
     # Sort by completed_at if available, otherwise by updated_at
-    completed.sort(key=lambda t: t.completed_at or t.updated_at or "", reverse=True)
-    return completed
+    tasks.sort(key=lambda t: t.completed_at or t.updated_at or "", reverse=True)
+    return tasks
 
 
 def pull_task(task_id: int, target_scope: str) -> Task:
@@ -547,7 +558,7 @@ def pull_task(task_id: int, target_scope: str) -> Task:
 
     Args:
         task_id: ID of task to pull
-        target_scope: Target scope ('backlog', 'week', or 'today')
+        target_scope: Target scope ('backlog', 'week', 'today', or 'archived')
 
     Returns:
         Updated Task object with new scope
@@ -559,10 +570,11 @@ def pull_task(task_id: int, target_scope: str) -> Task:
     Notes:
         - This is the "commitment" operation that moves tasks through the workflow
         - Common flows: backlog → week, week → today, today → backlog (defer)
+        - Can also move archived → backlog/week/today to reactivate completed tasks
         - Automatically updates updated_at timestamp
     """
-    # Validate target scope
-    valid_scopes = ("backlog", "week", "today")
+    # Validate target scope (now includes archived)
+    valid_scopes = ("backlog", "week", "today", "archived")
     if target_scope not in valid_scopes:
         raise InvalidInputError(
             f"Invalid scope '{target_scope}'. Must be one of: {', '.join(valid_scopes)}"
@@ -592,8 +604,8 @@ def pull_tasks(task_ids: List[int], target_scope: str) -> List[Task]:
         - If a task fails, the error bubbles up (not caught here)
         - Use this for bulk pulls like "pull 1,2,3 into week"
     """
-    # Validate target scope once
-    valid_scopes = ("backlog", "week", "today")
+    # Validate target scope once (now includes archived)
+    valid_scopes = ("backlog", "week", "today", "archived")
     if target_scope not in valid_scopes:
         raise InvalidInputError(
             f"Invalid scope '{target_scope}'. Must be one of: {', '.join(valid_scopes)}"

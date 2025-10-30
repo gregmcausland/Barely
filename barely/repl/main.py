@@ -62,7 +62,7 @@ from .parser import parse_command, ParseResult
 from .completer import create_completer
 from . import style
 from . import blitz
-from . import pickers
+from . import undo
 
 
 # Rich console for formatted output
@@ -82,7 +82,7 @@ class REPLContext:
 
     Attributes:
         current_project: Currently selected project (or None for all)
-        current_scope: Current scope filter ('today', 'week', 'backlog', or None for all)
+        current_scope: Current scope filter ('today', 'week', 'backlog', 'archived', or None for all)
     """
     current_project: Optional[Project] = None
     current_scope: Optional[str] = None
@@ -254,28 +254,56 @@ def display_tasks_table(tasks: list[Task]) -> None:
         console.print("[dim]No tasks found[/dim]")
         return
 
-    # Build project name cache for efficient lookups
+    # Check if we're in a project context (all tasks from same project)
+    in_project_context = False
+    project_header_name = None
+    
+    if repl_context.current_project:
+        # We're in a project context - show project as header, hide column
+        in_project_context = True
+        project_header_name = repl_context.current_project.name
+    else:
+        # Check if all tasks share the same project (even without context)
+        project_ids = {task.project_id for task in tasks if task.project_id}
+        if len(project_ids) == 1:
+            # All tasks from same project - show as header for clarity
+            project_id = project_ids.pop()
+            project = service.get_project(project_id)
+            if project:
+                in_project_context = True
+                project_header_name = project.name
+
+    # Show project header if in project context
+    if in_project_context and project_header_name:
+        console.print(f"[bold cyan]Project:[/bold cyan] [cyan]{project_header_name}[/cyan]\n")
+
+    # Build project name cache for efficient lookups (only if showing Project column)
     project_cache = {}
-    project_ids = {task.project_id for task in tasks if task.project_id}
-    for proj_id in project_ids:
-        project = service.get_project(proj_id)
-        if project:
-            project_cache[proj_id] = project.name
+    if not in_project_context:
+        project_ids = {task.project_id for task in tasks if task.project_id}
+        for proj_id in project_ids:
+            project = service.get_project(proj_id)
+            if project:
+                project_cache[proj_id] = project.name
 
     # Create table with columns
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("ID", style="cyan", width=6)
     table.add_column("Title", style="white")
     table.add_column("Scope", style="magenta", width=10)
-    table.add_column("Project", style="yellow", width=12)
+    
+    # Only add Project column if not in project context
+    if not in_project_context:
+        table.add_column("Project", style="yellow", width=12)
 
     # Add rows for each task
     for task in tasks:
-        # Resolve project name from cache
-        if task.project_id:
-            project_name = project_cache.get(task.project_id, f"[dim]ID:{task.project_id}[/dim]")
-        else:
-            project_name = "-"
+        # Resolve project name from cache (only if showing Project column)
+        if not in_project_context:
+            if task.project_id:
+                project_name = project_cache.get(task.project_id, f"[dim]ID:{task.project_id}[/dim]")
+            else:
+                project_name = "-"
 
         # Color code scope: backlog=dim, week=blue, today=bright_magenta
         scope_style_map = {
@@ -285,23 +313,27 @@ def display_tasks_table(tasks: list[Task]) -> None:
         }
         scope_style = scope_style_map.get(task.scope, "white")
 
-        table.add_row(
+        # Build row - conditionally include project column
+        row_data = [
             str(task.id),
             task.title,
             f"[{scope_style}]{task.scope}[/{scope_style}]",
-            project_name,
-        )
+        ]
+        if not in_project_context:
+            row_data.append(project_name)
+        
+        table.add_row(*row_data)
 
     console.print(table)
 
 
-def pick_task(title: str = "Select a task", filter_status: Optional[str] = None) -> Optional[List[int]]:
+def pick_task(title: str = "Select a task", filter_scope: Optional[str] = None) -> Optional[List[int]]:
     """
     Show simple task picker filtered by current context.
 
     Args:
         title: Title for the picker
-        filter_status: Optional status filter (e.g., "todo" for done command)
+        filter_scope: Optional scope filter (e.g., "todo" for done command - now deprecated)
 
     Returns:
         List of selected task IDs or None if cancelled
@@ -322,24 +354,18 @@ def pick_task(title: str = "Select a task", filter_status: Optional[str] = None)
         if repl_context.current_scope:
             tasks = [t for t in tasks if t.scope == repl_context.current_scope]
 
-        # Apply status filter if provided
-        if filter_status:
-            tasks = [t for t in tasks if t.status == filter_status]
+        # Exclude archived tasks by default for picker (they're completed)
+        tasks = [t for t in tasks if t.scope != "archived"]
 
         if not tasks:
             console.print("[yellow]No tasks available in current context[/yellow]")
             console.print("[dim]Tip: Use 'use' or 'scope' to change context, or specify task ID directly[/dim]")
             return None
 
-        # Try compact overlay picker first (multi-select)
-        selection = pickers.pick_tasks_overlay(title, tasks, multi=True)
-        if selection:
-            return selection
-
-        # Limit to 20 tasks for readability in inline fallback
+        # Limit to 20 tasks for readability
         tasks = tasks[:20]
 
-        # Show title (fallback)
+        # Show title
         console.print(f"\n[bold cyan]{title}[/bold cyan]")
 
         # Display numbered list
@@ -356,7 +382,7 @@ def pick_task(title: str = "Select a task", filter_status: Optional[str] = None)
             # Build display line
             console.print(f"  [{idx}] {task.title} [dim](id:{task.id}, {scope_display})[/dim]")
 
-        # Prompt for selection (fallback)
+        # Prompt for selection
         console.print()
         try:
             selection = input("Select number(s) - use commas for multiple (or press Enter to cancel): ").strip()
@@ -420,6 +446,9 @@ def handle_add_command(result: ParseResult) -> None:
 
         task = service.create_task(title, project_id=project_id)
 
+        # Record for undo
+        undo.record_create(task.id)
+
         # Celebrate!
         style.celebrate_add()
 
@@ -436,21 +465,19 @@ def handle_add_command(result: ParseResult) -> None:
 
 def handle_ls_command(result: ParseResult) -> None:
     """
-    Handle 'ls' command - list tasks (excludes completed by default).
+    Handle 'ls' command - list tasks (excludes archived by default).
 
     Args:
         result: Parsed command with args and flags
 
     Usage:
         ls
-        ls --status todo
         ls --project "Work"
-        ls --done              (include completed tasks)
+        ls --archived              (include archived/completed tasks)
     """
     # Get optional filters from flags
-    status = result.flags.get("status")
     project_name = result.flags.get("project")
-    include_done = result.flags.get("done", False)
+    include_archived = result.flags.get("archived", False)
 
     try:
         # Determine project filter (flag overrides context)
@@ -472,7 +499,11 @@ def handle_ls_command(result: ParseResult) -> None:
             project_id = repl_context.current_project.id
 
         # Get tasks with filters
-        tasks = service.list_tasks(project_id=project_id, status=status, include_done=include_done)
+        # If scope filter is set to 'archived', automatically include archived tasks
+        if repl_context.current_scope == 'archived':
+            include_archived = True
+        
+        tasks = service.list_tasks(project_id=project_id, include_archived=include_archived)
 
         # Apply scope filter from context if set
         if repl_context.current_scope:
@@ -498,8 +529,8 @@ def handle_done_command(result: ParseResult) -> None:
         done           (shows picker)
     """
     if not result.args:
-        # No args - show picker for todo tasks
-        task_ids = pick_task(title="Mark task as done", filter_status="todo")
+        # No args - show picker for active tasks (excludes archived)
+        task_ids = pick_task(title="Mark task as done")
         if task_ids is None:
             return  # User cancelled
 
@@ -507,7 +538,22 @@ def handle_done_command(result: ParseResult) -> None:
         completed_count = 0
         for task_id in task_ids:
             try:
+                # Get original task data before completion
+                original_task = repository.get_task(task_id)
+                if original_task:
+                    original_scope = original_task.scope
+                    original_completed_at = original_task.completed_at
+                    original_column_id = original_task.column_id
+                else:
+                    original_scope = "backlog"
+                    original_completed_at = None
+                    original_column_id = 1
+                
                 task = service.complete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                undo.record_complete(task_id, original_scope, original_completed_at, original_column_id)
+                
                 style.celebrate_done()
                 display_task(task, "✓ Completed:")
                 completed_count += 1
@@ -529,7 +575,23 @@ def handle_done_command(result: ParseResult) -> None:
         for id_str in ids:
             try:
                 task_id = int(id_str)
+                
+                # Get original task data before completion
+                original_task = repository.get_task(task_id)
+                if original_task:
+                    original_scope = original_task.scope
+                    original_completed_at = original_task.completed_at
+                    original_column_id = original_task.column_id
+                else:
+                    original_scope = "backlog"
+                    original_completed_at = None
+                    original_column_id = 1
+                
                 task = service.complete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                undo.record_complete(task_id, original_scope, original_completed_at, original_column_id)
+                
                 style.celebrate_done()
                 display_task(task, "✓ Completed:")
                 completed_count += 1
@@ -599,7 +661,26 @@ def handle_rm_command(result: ParseResult) -> None:
         deleted_count = 0
         for task_id in task_ids:
             try:
+                # Get task data before deletion (for undo)
+                task_data = None
+                task = repository.get_task(task_id)
+                if task:
+                    task_data = {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status,
+                        "scope": task.scope,
+                        "project_id": task.project_id,
+                        "column_id": task.column_id,
+                    }
+                
                 service.delete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                if task_data:
+                    undo.record_delete(task_id, task_data)
+                
                 style.celebrate_delete()
                 console.print(f"[green]✓ Deleted task {task_id}[/green]")
                 deleted_count += 1
@@ -702,7 +783,26 @@ def handle_rm_command(result: ParseResult) -> None:
         deleted_count = 0
         for task_id in tasks_to_delete:
             try:
+                # Get task data before deletion (for undo)
+                task_data = None
+                task = repository.get_task(task_id)
+                if task:
+                    task_data = {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status,
+                        "scope": task.scope,
+                        "project_id": task.project_id,
+                        "column_id": task.column_id,
+                    }
+                
                 service.delete_task(task_id)
+                
+                # Record for undo (only track last operation)
+                if task_data:
+                    undo.record_delete(task_id, task_data)
+                
                 style.celebrate_delete()
                 console.print(f"[green]✓ Deleted task {task_id}[/green]")
                 deleted_count += 1
@@ -745,7 +845,16 @@ def handle_edit_command(result: ParseResult) -> None:
 
         # Join remaining args as new title
         new_title = " ".join(result.args[1:])
+        
+        # Get original title before update (for undo)
+        original_task = repository.get_task(task_id)
+        original_title = original_task.title if original_task else ""
+        
         task = service.update_task_title(task_id, new_title)
+        
+        # Record for undo
+        undo.record_update_title(task_id, original_title, new_title)
+        
         display_task(task, "✎ Updated:")
 
     except ValueError:
@@ -763,7 +872,15 @@ def handle_edit_command(result: ParseResult) -> None:
         task_id = task_ids[0]
 
         try:
+            # Get original title before update (for undo)
+            original_task = repository.get_task(task_id)
+            original_title = original_task.title if original_task else ""
+            
             task = service.update_task_title(task_id, new_title)
+            
+            # Record for undo
+            undo.record_update_title(task_id, original_title, new_title)
+            
             display_task(task, "✎ Updated:")
         except TaskNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -986,7 +1103,15 @@ def handle_mv_command(result: ParseResult) -> None:
             return
 
         # Move task
+        # Get original column before move (for undo)
+        original_task = repository.get_task(task_id)
+        original_column_id = original_task.column_id if original_task else 1
+        
         task = service.move_task(task_id, column.id)
+        
+        # Record for undo
+        undo.record_mv(task_id, original_column_id, column.id)
+        
         display_task(task, f"→ Moved to {column.name}:")
 
     except ValueError:
@@ -1012,7 +1137,15 @@ def handle_mv_command(result: ParseResult) -> None:
         moved_count = 0
         for task_id in task_ids:
             try:
+                # Get original column before move (for undo)
+                original_task = repository.get_task(task_id)
+                original_column_id = original_task.column_id if original_task else 1
+                
                 task = service.move_task(task_id, column.id)
+                
+                # Record for undo (only track last operation)
+                undo.record_mv(task_id, original_column_id, column.id)
+                
                 display_task(task, f"→ Moved to {column.name}:")
                 moved_count += 1
             except TaskNotFoundError as e:
@@ -1208,15 +1341,15 @@ def handle_backlog_command(result: ParseResult) -> None:
         console.print(f"[red]Unexpected error:[/red] {e}")
 
 
-def handle_history_command(result: ParseResult) -> None:
+def handle_archive_command(result: ParseResult) -> None:
     """
-    Handle 'history' command - view completed tasks.
+    Handle 'archive' command - view archived/completed tasks.
 
     Args:
         result: Parsed command with args and flags
 
     Usage:
-        history
+        archive
     """
     try:
         tasks = service.list_completed()
@@ -1226,10 +1359,10 @@ def handle_history_command(result: ParseResult) -> None:
             tasks = [t for t in tasks if t.project_id == repl_context.current_project.id]
 
         if not tasks:
-            console.print("[dim]No completed tasks[/dim]")
+            console.print("[dim]No archived tasks[/dim]")
             return
 
-        console.print("[bold cyan]History[/bold cyan]")
+        console.print("[bold cyan]Archive[/bold cyan]")
         display_tasks_table(tasks)
     except BarelyError as e:
         console.print(f"[red]Unexpected error:[/red] {e}")
@@ -1251,7 +1384,7 @@ def handle_pull_command(result: ParseResult) -> None:
         pull *             (pull all tasks in current context to today)
         pull * week        (pull all tasks in current context to week)
     """
-    valid_scopes = ("backlog", "week", "today")
+    valid_scopes = ("backlog", "week", "today", "archived")
 
     # No args: show picker, default to today
     if not result.args:
@@ -1372,11 +1505,19 @@ def handle_pull_command(result: ParseResult) -> None:
 
     # Pull tasks (common path for all branches)
     pulled_count = 0
-    scope_emoji = {"backlog": "📋", "week": "📅", "today": "⭐"}
+    scope_emoji = {"backlog": "📋", "week": "📅", "today": "⭐", "archived": "✓"}
 
     for task_id in task_ids:
         try:
+            # Get original scope before pull (for undo)
+            original_task = repository.get_task(task_id)
+            original_scope = original_task.scope if original_task else "backlog"
+            
             task = service.pull_task(task_id, scope)
+            
+            # Record for undo (only track last operation)
+            undo.record_pull(task_id, original_scope, scope)
+            
             style.celebrate_pull()
             console.print(
                 f"[blue]{scope_emoji.get(scope, '→')}[/blue] "
@@ -1670,6 +1811,7 @@ def handle_scope_command(result: ParseResult) -> None:
         scope today         # Filter to today
         scope week          # Filter to week
         scope backlog       # Filter to backlog
+        scope archived      # Filter to archived/completed tasks
         scope all           # Clear scope filter
     """
     if not result.args:
@@ -1689,7 +1831,7 @@ def handle_scope_command(result: ParseResult) -> None:
         return
 
     # Validate scope
-    valid_scopes = ("today", "week", "backlog")
+    valid_scopes = ("today", "week", "backlog", "archived")
     if scope_name not in valid_scopes:
         console.print(f"[red]Error:[/red] Invalid scope '{scope_name}'")
         console.print(f"[dim]Valid scopes: {', '.join(valid_scopes)}, all[/dim]")
@@ -1697,6 +1839,24 @@ def handle_scope_command(result: ParseResult) -> None:
 
     repl_context.current_scope = scope_name
     console.print(f"✓ Filtering to [cyan]{scope_name}[/cyan] tasks")
+
+
+def handle_undo_command(result: ParseResult) -> None:
+    """
+    Handle 'undo' command - undo last operation.
+    
+    Args:
+        result: Parsed command (unused)
+    
+    Usage:
+        undo
+    """
+    success, message = undo.undo_last_operation()
+    
+    if success:
+        console.print(f"[green]✓ {message}[/green]")
+    else:
+        console.print(f"[yellow]{message}[/yellow]")
 
 
 def handle_help_command(result: ParseResult) -> None:
@@ -1710,7 +1870,7 @@ def handle_help_command(result: ParseResult) -> None:
 [bold cyan]Available Commands:[/bold cyan]
 
   [cyan]add <title>[/cyan]              Create a new task
-  [cyan]ls [--status <status>] [--project <name>] [--done][/cyan]   List tasks
+  [cyan]ls [--archived] [--project <name>][/cyan]   List tasks
   [cyan]done [<id>[,<id>...]][/cyan]    Mark task(s) as complete (picker if no ID)
   [cyan]rm [<id>[,<id>...]][/cyan]      Delete task(s) (picker if no ID)
   [cyan]edit [<id>] <title>[/cyan]      Update task title (picker if no ID)
@@ -1721,7 +1881,7 @@ def handle_help_command(result: ParseResult) -> None:
   [cyan]today[/cyan]                    List today's tasks
   [cyan]week[/cyan]                     List this week's tasks
   [cyan]backlog[/cyan]                  List backlog tasks
-  [cyan]history[/cyan]                  View completed tasks
+  [cyan]archive[/cyan]                  View archived/completed tasks
   [cyan]pull [<id>[,<id>...]] [scope][/cyan] Pull tasks into scope (defaults to today)
   [cyan]blitz[/cyan]                    Enter focused completion mode (with audio viz!)
   [cyan]use <project>[/cyan]           Set current working project
@@ -1735,16 +1895,15 @@ def handle_help_command(result: ParseResult) -> None:
 
 [bold cyan]Flags:[/bold cyan]
 
-  [cyan]--status <status>[/cyan]        Filter by status (todo, done, archived)
   [cyan]--project <name>[/cyan]         Filter by project name
-  [cyan]--done[/cyan]                   Include completed tasks in ls output
+  [cyan]--archived[/cyan]                Include archived/completed tasks in ls output
 
 [bold cyan]Examples:[/bold cyan]
 
   [dim]add Buy groceries
   add "Task with spaces in title"
   ls
-  ls --status todo
+  ls --project Work
   ls --project Work
   done 42
   done                        # Shows picker for todo tasks
@@ -1759,6 +1918,7 @@ def handle_help_command(result: ParseResult) -> None:
   today                       # View today's focus list
   week                        # View this week's commitment
   backlog                     # View all backlog tasks
+  archive                     # View archived/completed tasks
   pull 3,5,7                  # Pull tasks into today (default)
   pull                        # Shows picker for today scope
   pull 42 week                # Pull specific task into week
@@ -1853,7 +2013,7 @@ def execute_command(result: ParseResult) -> bool:
         "today": handle_today_command,
         "week": handle_week_command,
         "backlog": handle_backlog_command,
-        "history": handle_history_command,
+        "archive": handle_archive_command,
         "pull": handle_pull_command,
         "use": handle_use_command,
         "scope": handle_scope_command,
@@ -1861,6 +2021,7 @@ def execute_command(result: ParseResult) -> bool:
         "blitz": handle_blitz_command,
         "help": handle_help_command,
         "clear": handle_clear_command,
+        "undo": handle_undo_command,
     }
 
     handler = handlers.get(command)

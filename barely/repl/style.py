@@ -16,7 +16,6 @@ NOTES:
 """
 
 import random
-from datetime import datetime, timezone
 
 
 # Celebration variants for task completion
@@ -131,51 +130,16 @@ def celebrate_bulk(count: int, action: str) -> str:
     return f"{celebration} {action.capitalize()} {count} tasks!"
 
 
-def _parse_iso(ts_iso: str) -> datetime | None:
-    """Parse ISO-8601 timestamp to timezone-aware datetime (UTC)."""
-    if not ts_iso:
-        return None
-    try:
-        # Handle naive or aware inputs
-        dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
 def format_relative(ts_iso: str) -> str:
     """
     Format an ISO-8601 timestamp as a relative string.
-
+    
+    Uses the improved formatting module for better date handling.
+    
     Examples:
-        "2 minutes ago", "3 hours ago", "yesterday", "in 5 minutes"
+        "just now", "2 hours ago", "yesterday", "Jan 15", "tomorrow"
     Fallbacks to the original string if parsing fails.
     """
-    dt = _parse_iso(ts_iso)
-    if not dt:
-        return ts_iso or ""
-
-    now = datetime.now(timezone.utc)
-    delta = dt - now
-    seconds = int(delta.total_seconds())
-    past = seconds < 0
-    seconds = abs(seconds)
-
-    def unit(n, name):
-        return f"{n} {name}{'' if n == 1 else 's'}"
-
-    if seconds < 60:
-        text = unit(seconds, "second")
-    elif seconds < 3600:
-        text = unit(seconds // 60, "minute")
-    elif seconds < 86400:
-        text = unit(seconds // 3600, "hour")
-    elif seconds < 172800:
-        text = "yesterday" if past else "tomorrow"
-        return text
-    else:
-        text = unit(seconds // 86400, "day")
-
-    return f"{text} ago" if past else f"in {text}"
+    # Import here to avoid circular dependency
+    from .formatting import format_relative_date
+    return format_relative_date(ts_iso)

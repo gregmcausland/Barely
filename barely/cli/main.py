@@ -15,7 +15,7 @@ EXPORTS:
   - edit() - Update task title
   - desc() - Edit task description in $EDITOR
   - show() - View full task details
-  - history() - View completed tasks
+  - archive() - View archived/completed tasks
   - mv() - Move task to column
   - assign() - Assign task to project
   - today() - List today's tasks
@@ -122,7 +122,7 @@ def help():
 
     commands = [
         ("add", "Create a new task", 'barely add "Task title"'),
-        ("ls", "List tasks", "barely ls [--status todo|done] [--project ID]"),
+        ("ls", "List tasks", "barely ls [--archived] [--project ID]"),
         ("done", "Mark task as complete", "barely done <task_id>"),
         ("edit", "Update task title", 'barely edit <task_id> "New title"'),
         ("desc", "Edit task description", "barely desc <task_id>"),
@@ -133,7 +133,7 @@ def help():
         ("today", "List today's tasks", "barely today"),
         ("week", "List this week's tasks", "barely week"),
         ("backlog", "List backlog tasks", "barely backlog"),
-        ("history", "View completed tasks", "barely history"),
+        ("archive", "View archived/completed tasks", "barely archive"),
         ("pull", "Pull tasks into scope", "barely pull <task_id(s)> <scope>"),
         ("project add", "Create a project", 'barely project add "Project name"'),
         ("project ls", "List projects", "barely project ls"),
@@ -275,19 +275,17 @@ def add(
 @app.command()
 def ls(
     project_name: Optional[str] = typer.Option(None, "--project", "-p", help="Filter by project name"),
-    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (todo/done/archived)"),
-    include_done: bool = typer.Option(False, "--done", help="Include completed tasks"),
+    include_archived: bool = typer.Option(False, "--archived", help="Include archived/completed tasks"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     raw: bool = typer.Option(False, "--raw", help="Plain text output (no colors)"),
 ):
     """
-    List tasks (excluding completed by default).
+    List tasks (excluding archived/completed by default).
 
     Example:
         barely ls
-        barely ls --status todo
         barely ls --project "Work"
-        barely ls --done
+        barely ls --archived
         barely ls --json
     """
     try:
@@ -306,8 +304,7 @@ def ls(
 
         tasks = service.list_tasks(
             project_id=project_id,
-            status=status,
-            include_done=include_done,
+            include_archived=include_archived,
         )
 
         if json_output:
@@ -330,7 +327,7 @@ def ls(
         elif raw:
             # Plain text, one per line
             for task in tasks:
-                status_marker = "✓" if task.status == "done" else " "
+                status_marker = "✓" if task.scope == "archived" else " "
                 console.print(f"{task.id}: [{status_marker}] {task.title}")
 
         else:
@@ -347,14 +344,15 @@ def ls(
             table.add_column("Column", style="blue")
 
             for task in tasks:
-                status_display = "✓" if task.status == "done" else "○"
-                status_style = "green" if task.status == "done" else "yellow"
+                status_display = "✓" if task.scope == "archived" else "○"
+                status_style = "green" if task.scope == "archived" else "yellow"
 
-                # Color code scope: backlog=dim, week=blue, today=bright_magenta
+                # Color code scope: backlog=dim, week=blue, today=bright_magenta, archived=green
                 scope_style_map = {
                     "backlog": "dim",
                     "week": "blue",
                     "today": "bright_magenta",
+                    "archived": "green",
                 }
                 scope_style = scope_style_map.get(task.scope, "white")
 
@@ -735,11 +733,15 @@ def show(
                 details.append(f"{project_name}\n", style="cyan")
 
             details.append(f"Created: ", style="dim")
-            details.append(f"{task.created_at}\n", style="white")
+            # Use relative date formatting
+            from ..repl import style
+            created_rel = style.format_relative(task.created_at) if task.created_at else "-"
+            details.append(f"{created_rel}\n", style="white")
 
             if task.completed_at:
                 details.append(f"Completed: ", style="dim")
-                details.append(f"{task.completed_at}\n", style="green")
+                completed_rel = style.format_relative(task.completed_at)
+                details.append(f"{completed_rel}\n", style="green")
 
             panel = Panel(details, border_style="blue", padding=(1, 2))
             console.print(panel)
@@ -882,7 +884,7 @@ def today(
         elif raw:
             # Plain text, one per line
             for task in tasks:
-                status_marker = "✓" if task.status == "done" else " "
+                status_marker = "✓" if task.scope == "archived" else " "
                 console.print(f"{task.id}: [{status_marker}] {task.title}")
 
         else:
@@ -899,8 +901,8 @@ def today(
             table.add_column("Column", style="blue")
 
             for task in tasks:
-                status_display = "✓" if task.status == "done" else "○"
-                status_style = "green" if task.status == "done" else "yellow"
+                status_display = "✓" if task.scope == "archived" else "○"
+                status_style = "green" if task.scope == "archived" else "yellow"
 
                 table.add_row(
                     str(task.id),
@@ -955,7 +957,7 @@ def week(
         elif raw:
             # Plain text, one per line
             for task in tasks:
-                status_marker = "✓" if task.status == "done" else " "
+                status_marker = "✓" if task.scope == "archived" else " "
                 console.print(f"{task.id}: [{status_marker}] {task.title}")
 
         else:
@@ -972,8 +974,8 @@ def week(
             table.add_column("Column", style="blue")
 
             for task in tasks:
-                status_display = "✓" if task.status == "done" else "○"
-                status_style = "green" if task.status == "done" else "yellow"
+                status_display = "✓" if task.scope == "archived" else "○"
+                status_style = "green" if task.scope == "archived" else "yellow"
 
                 table.add_row(
                     str(task.id),
@@ -1028,7 +1030,7 @@ def backlog(
         elif raw:
             # Plain text, one per line
             for task in tasks:
-                status_marker = "✓" if task.status == "done" else " "
+                status_marker = "✓" if task.scope == "archived" else " "
                 console.print(f"{task.id}: [{status_marker}] {task.title}")
 
         else:
@@ -1044,8 +1046,8 @@ def backlog(
             table.add_column("Column", style="blue")
 
             for task in tasks:
-                status_display = "✓" if task.status == "done" else "○"
-                status_style = "green" if task.status == "done" else "yellow"
+                status_display = "✓" if task.scope == "archived" else "○"
+                status_style = "green" if task.scope == "archived" else "yellow"
 
                 table.add_row(
                     str(task.id),
@@ -1063,19 +1065,19 @@ def backlog(
 
 
 @app.command()
-def history(
+def archive(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     raw: bool = typer.Option(False, "--raw", help="Plain text output (no colors)"),
 ):
     """
-    View completed tasks (your work history).
+    View archived/completed tasks.
 
-    Shows tasks that have been marked as done and moved to the Done column.
-    You can reopen tasks with 'mv <id> Todo'.
+    Shows tasks that have been marked as done and moved to archived scope.
+    You can reactivate tasks by pulling them back: 'pull <id> backlog'.
 
     Example:
-        barely history
-        barely history --json
+        barely archive
+        barely archive --json
     """
     try:
         tasks = service.list_completed()
@@ -1106,10 +1108,10 @@ def history(
         else:
             # Rich table output
             if not tasks:
-                console.print("[dim]No completed tasks[/dim]")
+                console.print("[dim]No archived tasks[/dim]")
                 return
 
-            table = Table(title="History")
+            table = Table(title="Archive")
             table.add_column("ID", style="cyan", no_wrap=True)
             table.add_column("Title", style="white")
             table.add_column("Scope", style="blue")
